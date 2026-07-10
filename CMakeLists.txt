@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS ON)
 
 #set(CMAKE_PREFIX_PATH "~/local/") #uncomment if you have local libraries compiled in ~/local/
 
-find_package(OpenCV 3.0.0 REQUIRED)
+find_package(OpenCV 4.13.0 REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 find_package(OpenMP)
