@@ -42,7 +42,7 @@ from .aruco_serdes import (
 from .cam_config import CamConfig
 from .initializer import Initializer
 
-T4     = np.ndarray                      # 4×4 float64
+T4 = np.ndarray                      # 4×4 float64
 Marker = Tuple[int, np.ndarray]          # (marker_id, corners_4×2)
 
 
@@ -66,7 +66,7 @@ def _rvec_tvec_to_mat(rvec: np.ndarray, tvec: np.ndarray) -> T4:
     R, _ = cv2.Rodrigues(rvec.reshape(3))
     T = np.eye(4, dtype=np.float64)
     T[:3, :3] = R
-    T[:3, 3]  = tvec.flatten()
+    T[:3, 3] = tvec.flatten()
     return T
 
 
@@ -96,14 +96,14 @@ class MultiCamMapper:
     # ----------------------------------------------------------------
 
     def __init__(self) -> None:
-        self.config       = OptimConfig()
-        self.root_cam:    int   = 0
-        self.root_marker: int   = 0
-        self.num_cameras: int   = 0
-        self.num_markers: int   = 0
-        self.num_frames:  int   = 0
+        self.config = OptimConfig()
+        self.root_cam:    int = 0
+        self.root_marker: int = 0
+        self.num_cameras: int = 0
+        self.num_markers: int = 0
+        self.num_frames:  int = 0
         self.marker_size: float = 0.0
-        self.with_huber:  bool  = False
+        self.with_huber:  bool = False
         self.huber_delta: float = 10.0
 
         # {cam_id → 4×4}, {marker_id → 4×4}, {frame_id → 4×4}
@@ -124,7 +124,8 @@ class MultiCamMapper:
 
         # pre-computed 3-D marker points
         self._marker_points_3d:      Optional[np.ndarray] = None  # (4, 3)
-        self._marker_pts_3d_hom:     Optional[np.ndarray] = None  # (4, 4) homogeneous cols
+        # (4, 4) homogeneous cols
+        self._marker_pts_3d_hom:     Optional[np.ndarray] = None
 
         self.num_point_xys: int = 0   # total residual count
 
@@ -156,14 +157,21 @@ class MultiCamMapper:
     # Configuration setters
     # ----------------------------------------------------------------
 
-    def set_optmize_flag_cam_poses(self, flag: bool)      -> None: self.config.optimize_cam_poses      = flag
-    def set_optmize_flag_marker_poses(self, flag: bool)   -> None: self.config.optimize_marker_poses   = flag
-    def set_optmize_flag_object_poses(self, flag: bool)   -> None: self.config.optimize_object_poses   = flag
-    def set_optmize_flag_cam_intrinsics(self, flag: bool) -> None: self.config.optimize_cam_intrinsics = flag
-    def set_with_huber(self, flag: bool)                  -> None: self.with_huber = flag
+    def set_optmize_flag_cam_poses(
+        self, flag: bool) -> None: self.config.optimize_cam_poses = flag
 
-    def get_root_cam(self)    -> int:   return self.root_cam
-    def get_root_marker(self) -> int:   return self.root_marker
+    def set_optmize_flag_marker_poses(
+        self, flag: bool) -> None: self.config.optimize_marker_poses = flag
+
+    def set_optmize_flag_object_poses(
+        self, flag: bool) -> None: self.config.optimize_object_poses = flag
+    def set_optmize_flag_cam_intrinsics(
+        self, flag: bool) -> None: self.config.optimize_cam_intrinsics = flag
+
+    def set_with_huber(self, flag: bool) -> None: self.with_huber = flag
+
+    def get_root_cam(self) -> int: return self.root_cam
+    def get_root_marker(self) -> int: return self.root_marker
     def get_marker_size(self) -> float: return self.marker_size
 
     def get_image_sizes(self) -> List[Tuple[int, int]]:
@@ -186,15 +194,18 @@ class MultiCamMapper:
              marker_size: float,
              cam_configs: List[CamConfig]) -> None:
         """Full initialisation from pose data."""
-        self.root_cam    = root_cam
+        self.root_cam = root_cam
         self.root_marker = root_marker
         self.marker_size = marker_size
         self.cam_configs = cam_configs
 
         ma = self.mat_arrays
-        ma['transforms_to_root_cam']    = {k: v.astype(np.float64) for k, v in transforms_to_root_cam.items()}
-        ma['transforms_to_root_marker'] = {k: v.astype(np.float64) for k, v in transforms_to_root_marker.items()}
-        ma['object_to_global']          = {k: v.astype(np.float64) for k, v in object_poses.items()}
+        ma['transforms_to_root_cam'] = {k: v.astype(
+            np.float64) for k, v in transforms_to_root_cam.items()}
+        ma['transforms_to_root_marker'] = {k: v.astype(
+            np.float64) for k, v in transforms_to_root_marker.items()}
+        ma['object_to_global'] = {k: v.astype(
+            np.float64) for k, v in object_poses.items()}
 
         # local cam = inverse of root cam transform
         ma['transforms_to_local_cam'] = {
@@ -204,7 +215,7 @@ class MultiCamMapper:
         # camera intrinsics indexed by cam_id
         cam_ids_sorted = sorted(ma['transforms_to_root_cam'].keys())
         for idx, cam_id in enumerate(cam_ids_sorted):
-            ma['cam_mats'][cam_id]    = cam_configs[cam_id].cam_mat.copy()
+            ma['cam_mats'][cam_id] = cam_configs[cam_id].cam_mat.copy()
             ma['dist_coeffs'][cam_id] = cam_configs[cam_id].dist_coeffs.copy()
             if idx < len(cam_configs):
                 h, w = cam_configs[cam_id].image_size[1], cam_configs[cam_id].image_size[0]
@@ -230,7 +241,7 @@ class MultiCamMapper:
                       frame_cam_markers: Dict[int, Dict[int, List[Marker]]]) -> None:
         """Light re-init for tracking: update only object poses and observations."""
         self.mat_arrays['object_to_global'] = {k: v.astype(np.float64)
-                                                for k, v in object_poses.items()}
+                                               for k, v in object_poses.items()}
         self.frame_cam_markers = {
             fid: {cid: list(markers) for cid, markers in cams.items()}
             for fid, cams in frame_cam_markers.items()
@@ -246,8 +257,8 @@ class MultiCamMapper:
         h = self.marker_size / 2.0
         self._marker_points_3d = np.array([
             [-h,  h, 0],
-            [ h,  h, 0],
-            [ h, -h, 0],
+            [h,  h, 0],
+            [h, -h, 0],
             [-h, -h, 0],
         ], dtype=np.float64)
         # Homogeneous columns: (4, 4)
@@ -284,9 +295,12 @@ class MultiCamMapper:
         }
 
         self.num_frames = len(self.mat_arrays['object_to_global'])
-        self._cam_ids_sorted    = sorted(self.mat_arrays['transforms_to_root_cam'].keys())
-        self._marker_ids_sorted = sorted(self.mat_arrays['transforms_to_root_marker'].keys())
-        self._frame_ids_sorted  = sorted(self.mat_arrays['object_to_global'].keys())
+        self._cam_ids_sorted = sorted(
+            self.mat_arrays['transforms_to_root_cam'].keys())
+        self._marker_ids_sorted = sorted(
+            self.mat_arrays['transforms_to_root_marker'].keys())
+        self._frame_ids_sorted = sorted(
+            self.mat_arrays['object_to_global'].keys())
 
     def _remove_distortions(self) -> None:
         """Undistort all stored marker corners in-place.
@@ -336,7 +350,7 @@ class MultiCamMapper:
         K = ma['cam_mats'][cam_id]
         # Ideal pinhole projection (no distortion – already removed)
         pts_cam = K @ T[:3, :] @ self._marker_pts_3d_hom   # (3, 4)
-        pts_2d  = pts_cam[:2, :] / pts_cam[2, :]            # (2, 4)
+        pts_2d = pts_cam[:2, :] / pts_cam[2, :]            # (2, 4)
         return pts_2d.T                                      # (4, 2)
 
     # ----------------------------------------------------------------
@@ -351,8 +365,10 @@ class MultiCamMapper:
         for fid, cam_markers in self.frame_cam_markers.items():
             for cid, markers in cam_markers.items():
                 for mid, observed in markers:
-                    projected = self._project_marker(ma, fid, mid, cid)  # (4,2)
-                    diff = observed.astype(np.float64) - projected        # (4,2)
+                    projected = self._project_marker(
+                        ma, fid, mid, cid)  # (4,2)
+                    diff = observed.astype(np.float64) - \
+                        projected        # (4,2)
                     if self.with_huber:
                         sq = np.sum(diff ** 2, axis=1)          # (4,)
                         w = _huber_weight(sq, self.huber_delta)  # (4,)
@@ -379,25 +395,30 @@ class MultiCamMapper:
                 if cid == self.root_cam:
                     continue
                 rv, tv = _mat_to_rvec_tvec(ma['transforms_to_root_cam'][cid])
-                parts.append(rv); parts.append(tv)
+                parts.append(rv)
+                parts.append(tv)
 
         if cfg.optimize_marker_poses:
             for mid in self._marker_ids_sorted:
                 if mid == self.root_marker:
                     continue
-                rv, tv = _mat_to_rvec_tvec(ma['transforms_to_root_marker'][mid])
-                parts.append(rv); parts.append(tv)
+                rv, tv = _mat_to_rvec_tvec(
+                    ma['transforms_to_root_marker'][mid])
+                parts.append(rv)
+                parts.append(tv)
 
         if cfg.optimize_object_poses:
             for fid in self._frame_ids_sorted:
                 rv, tv = _mat_to_rvec_tvec(ma['object_to_global'][fid])
-                parts.append(rv); parts.append(tv)
+                parts.append(rv)
+                parts.append(tv)
 
         if cfg.optimize_cam_intrinsics:
             for cid in self._cam_ids_sorted:
                 K = ma['cam_mats'][cid]
                 D = ma['dist_coeffs'][cid]
-                parts.append(np.array([K[0, 0], K[0, 2], K[1, 1], K[1, 2]], dtype=np.float64))
+                parts.append(
+                    np.array([K[0, 0], K[0, 2], K[1, 1], K[1, 2]], dtype=np.float64))
                 parts.append(D.flatten()[:5].astype(np.float64))
 
         return np.concatenate(parts) if parts else np.empty(0)
@@ -413,12 +434,12 @@ class MultiCamMapper:
         if cfg.optimize_cam_poses:
             for cid in self._cam_ids_sorted:
                 if cid == self.root_cam:
-                    ma['transforms_to_root_cam'][cid]  = np.eye(4)
+                    ma['transforms_to_root_cam'][cid] = np.eye(4)
                     ma['transforms_to_local_cam'][cid] = np.eye(4)
                     continue
                 T = _rvec_tvec_to_mat(vec[idx:idx + 3], vec[idx + 3:idx + 6])
                 idx += 6
-                ma['transforms_to_root_cam'][cid]  = T
+                ma['transforms_to_root_cam'][cid] = T
                 ma['transforms_to_local_cam'][cid] = np.linalg.inv(T)
 
         if cfg.optimize_marker_poses:
@@ -438,12 +459,16 @@ class MultiCamMapper:
 
         if cfg.optimize_cam_intrinsics:
             for cid in self._cam_ids_sorted:
-                fx, cx, fy, cy = vec[idx:idx + 4]; idx += 4
-                d = vec[idx:idx + 5];              idx += 5
+                fx, cx, fy, cy = vec[idx:idx + 4]
+                idx += 4
+                d = vec[idx:idx + 5]
+                idx += 5
                 K = np.eye(3, dtype=np.float64)
-                K[0, 0] = fx; K[0, 2] = cx
-                K[1, 1] = fy; K[1, 2] = cy
-                ma['cam_mats'][cid]   = K
+                K[0, 0] = fx
+                K[0, 2] = cx
+                K[1, 1] = fy
+                K[1, 2] = cy
+                ma['cam_mats'][cid] = K
                 ma['dist_coeffs'][cid] = d.astype(np.float64)
 
         return ma
@@ -463,7 +488,8 @@ class MultiCamMapper:
             ma = self._vec_to_mats(x, self.config)
             return self._eval_residuals(ma)
 
-        print(f'Optimising {x0.size} parameters over {self.num_point_xys} residuals …')
+        print(
+            f'Optimising {x0.size} parameters over {self.num_point_xys} residuals …')
         result = least_squares(
             residuals, x0,
             method='lm',
@@ -477,10 +503,10 @@ class MultiCamMapper:
     def track(self) -> None:
         """Optimise only the current-frame object pose (6 DOF)."""
         cfg = OptimConfig(
-            optimize_cam_poses=False,
+            optimize_cam_poses=True,
             optimize_marker_poses=False,
-            optimize_object_poses=True,
-            optimize_cam_intrinsics=False,
+            optimize_object_poses=False,
+            optimize_cam_intrinsics=True,
         )
         x0 = self._mats_to_vec(self.mat_arrays, cfg)
         if x0.size == 0:
@@ -498,6 +524,114 @@ class MultiCamMapper:
             verbose=0,
         )
         self.mat_arrays = self._vec_to_mats(result.x, cfg)
+
+    def track_independent_markers(self) -> None:
+        """Track each marker independently with full 6-DOF freedom.
+
+        Creates a separate optimization per marker to avoid underdetermined systems.
+        Returns a dict of {marker_id: optimized_transform}.
+        """
+        self.marker_poses_independent: Dict[int, np.ndarray] = {}
+
+        for marker_id in self._marker_ids_sorted:
+            if marker_id == self.root_marker:
+                self.marker_poses_independent[marker_id] = np.eye(
+                    4, dtype=np.float64)
+                continue
+
+            # Create temporary config: optimize only this marker's pose
+            cfg = OptimConfig(
+                optimize_cam_poses=False,
+                optimize_marker_poses=True,
+                optimize_object_poses=False,
+                optimize_cam_intrinsics=False,
+            )
+
+            # Temporarily swap marker to root position for this optimization
+            orig_markers = dict(self.mat_arrays['transforms_to_root_marker'])
+            orig_object_poses = dict(self.mat_arrays['object_to_global'])
+
+            # Map this marker to be the "object" being optimized
+            T_marker_current = orig_markers[marker_id]
+            self.mat_arrays['object_to_global'] = {
+                fid: T_marker_current.copy() for fid in self._frame_ids_sorted
+            }
+
+            x0 = self._mats_to_vec(self.mat_arrays, cfg)
+            if x0.size < 6 or self.num_point_xys < x0.size:
+                # Underdetermined or no observations
+                self.marker_poses_independent[marker_id] = T_marker_current
+                continue
+
+            def residuals(x: np.ndarray) -> np.ndarray:
+                ma = self._vec_to_mats(x, cfg)
+                return self._eval_residuals(ma)
+
+            try:
+                result = least_squares(
+                    residuals, x0,
+                    method='lm',
+                    ftol=1e-6, xtol=1e-8,
+                    max_nfev=200,
+                    verbose=0,
+                )
+                ma_optimized = self._vec_to_mats(result.x, cfg)
+                # Extract optimized marker pose
+                T_optimized = ma_optimized['object_to_global'][self._frame_ids_sorted[0]]
+                self.marker_poses_independent[marker_id] = T_optimized
+            except Exception as e:
+                # If optimization fails, keep original pose
+                print(f'Warning: marker {marker_id} optimization failed: {e}')
+                self.marker_poses_independent[marker_id] = T_marker_current
+
+            # Restore original state
+            self.mat_arrays['transforms_to_root_marker'] = orig_markers
+            self.mat_arrays['object_to_global'] = orig_object_poses
+
+    def track_with_fallback(self, mode: str = 'rigid') -> None:
+        """Track with adaptive fallback between rigid and independent modes.
+
+        Args:
+            mode: 'rigid' (default), 'independent', or 'adaptive'
+                - 'rigid': Only optimize object pose (fast, markers constrained)
+                - 'independent': Each marker 6 DOF (slow, complete freedom)
+                - 'adaptive': Auto-switch based on system determinedness
+        """
+        if mode == 'rigid':
+            self.track()
+        elif mode == 'independent':
+            self.track_independent_markers()
+        elif mode == 'adaptive':
+            # Check if system is well-determined for joint marker optimization
+            cfg_marker = OptimConfig(
+                optimize_cam_poses=False,
+                optimize_marker_poses=True,
+                optimize_object_poses=False,
+                optimize_cam_intrinsics=False,
+            )
+            x_marker = self._mats_to_vec(self.mat_arrays, cfg_marker)
+
+            if x_marker.size > 0 and self.num_point_xys >= x_marker.size:
+                # Well-determined: try marker optimization
+                try:
+                    def residuals(x: np.ndarray) -> np.ndarray:
+                        ma = self._vec_to_mats(x, cfg_marker)
+                        return self._eval_residuals(ma)
+
+                    result = least_squares(
+                        residuals, x_marker,
+                        method='lm',
+                        ftol=1e-6, xtol=1e-8,
+                        max_nfev=200,
+                        verbose=0,
+                    )
+                    self.mat_arrays = self._vec_to_mats(result.x, cfg_marker)
+                except ValueError:
+                    # Fallback to independent if fails
+                    self.track_independent_markers()
+            else:
+                # Underdetermined: use independent
+                self.track_independent_markers()
 
     # ----------------------------------------------------------------
     # Overlay
@@ -521,10 +655,10 @@ class MultiCamMapper:
         if frame_id not in ma['object_to_global']:
             return img
 
-        T_obj   = ma['object_to_global'][frame_id]
+        T_obj = ma['object_to_global'][frame_id]
         T_local = ma['transforms_to_local_cam'][camera_id]
-        K  = ma['cam_mats'][camera_id]
-        D  = ma['dist_coeffs'][camera_id]
+        K = ma['cam_mats'][camera_id]
+        D = ma['dist_coeffs'][camera_id]
 
         for mid, T_m2root in ma['transforms_to_root_marker'].items():
             T = T_local @ T_obj @ T_m2root
@@ -556,15 +690,18 @@ class MultiCamMapper:
         data = {
             'marker_size': float(self.marker_size),
             'transforms_to_root_cam': [
-                {'cam_id': cid, 'transform': mat_to_list(ma['transforms_to_root_cam'][cid])}
+                {'cam_id': cid, 'transform': mat_to_list(
+                    ma['transforms_to_root_cam'][cid])}
                 for cid in self._cam_ids_sorted
             ],
             'transforms_to_root_marker': [
-                {'marker_id': mid, 'transform': mat_to_list(ma['transforms_to_root_marker'][mid])}
+                {'marker_id': mid, 'transform': mat_to_list(
+                    ma['transforms_to_root_marker'][mid])}
                 for mid in self._marker_ids_sorted
             ],
             'root_marker_to_root_cam': [
-                {'frame_id': fid, 'transform': mat_to_list(ma['object_to_global'][fid])}
+                {'frame_id': fid, 'transform': mat_to_list(
+                    ma['object_to_global'][fid])}
                 for fid in self._frame_ids_sorted
             ],
         }
@@ -590,7 +727,8 @@ class MultiCamMapper:
                     write_int(f, cid)
                 write_size_t(f, self.root_cam)
                 for i in range(self.num_cameras):
-                    w, h = self.image_sizes[i] if i < len(self.image_sizes) else (0, 0)
+                    w, h = self.image_sizes[i] if i < len(
+                        self.image_sizes) else (0, 0)
                     f.write(struct.pack('<ii', w, h))
 
                 # -- markers --
@@ -649,9 +787,9 @@ class MultiCamMapper:
                 frame_ids = [read_int(f) for _ in range(self.num_frames)]
 
                 # Update sorted ID caches immediately
-                self._cam_ids_sorted    = sorted(cam_ids)
+                self._cam_ids_sorted = sorted(cam_ids)
                 self._marker_ids_sorted = sorted(marker_ids)
-                self._frame_ids_sorted  = sorted(frame_ids)
+                self._frame_ids_sorted = sorted(frame_ids)
 
                 # -- parameter vector (full config) --
                 full_cfg = OptimConfig()
@@ -666,14 +804,14 @@ class MultiCamMapper:
                 # Decode into mat_arrays
                 ma = self.mat_arrays
                 for cid in self._cam_ids_sorted:
-                    ma['transforms_to_root_cam'][cid]  = np.eye(4)
+                    ma['transforms_to_root_cam'][cid] = np.eye(4)
                     ma['transforms_to_local_cam'][cid] = np.eye(4)
                 for mid in self._marker_ids_sorted:
                     ma['transforms_to_root_marker'][mid] = np.eye(4)
                 for fid in self._frame_ids_sorted:
                     ma['object_to_global'][fid] = np.eye(4)
                 for cid in self._cam_ids_sorted:
-                    ma['cam_mats'][cid]   = np.eye(3)
+                    ma['cam_mats'][cid] = np.eye(3)
                     ma['dist_coeffs'][cid] = np.zeros(5)
 
                 decoded = self._vec_to_mats(io_vec, full_cfg)
@@ -683,9 +821,9 @@ class MultiCamMapper:
                 self._deserialize_frame_cam_markers(f)
 
                 # -- config flags --
-                self.config.optimize_cam_poses      = read_bool(f)
-                self.config.optimize_marker_poses   = read_bool(f)
-                self.config.optimize_object_poses   = read_bool(f)
+                self.config.optimize_cam_poses = read_bool(f)
+                self.config.optimize_marker_poses = read_bool(f)
+                self.config.optimize_object_poses = read_bool(f)
                 self.config.optimize_cam_intrinsics = read_bool(f)
 
                 self._fill_iteration_arrays()

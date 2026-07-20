@@ -1,13 +1,14 @@
-"""track – real-time object tracking using a precomputed solution.
+"""track_independent_markers – track markers on independent rigid objects.
 
 Usage:
-    python -m apps.track <data_folder_path> <path_to_solution_file>
+    python -m apps.track_independent_markers <data_folder_path> <path_to_solution_file>
 
-Mirrors C++ track app.  For each frame:
+For each frame:
   1. Detect markers across all cameras.
-  2. Estimate initial object pose from known camera/marker geometry.
-  3. Refine the object pose (6-DOF) via Levenberg-Marquardt.
-  4. Overlay tracked marker outlines and show a mosaic window.
+  2. For each detected marker:
+     - Create a single-marker "pseudo-object" (marker pose = object pose)
+     - Refine that marker's pose via Levenberg-Marquardt
+  3. Track each marker independently with full 6-DOF freedom.
 """
 
 import argparse
@@ -111,24 +112,20 @@ def _draw_distance_plot(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='Real-time object tracking using a precomputed AR solution.'
+        description='Track independent markers on separate rigid objects.'
     )
     parser.add_argument('folder',   help='Path to dataset folder to track')
     parser.add_argument(
         'solution', help='Path to .solution file (from find_solution)')
     parser.add_argument(
-        '--reference-marker-id', type=int, default=None,
-        help='Reference marker id for relative marker vectors (default: root marker)'
-    )
-    parser.add_argument(
         '--relative-output', choices=['stdout', 'csv', 'both', 'none'],
         default='stdout',
-        help='Where to output relative marker vectors and absolute distances'
+        help='Where to output marker poses and distances'
     )
     parser.add_argument(
         '--relative-output-path', default=None,
         help='CSV output path when --relative-output is csv or both '
-             '(default: <dataset>/relative_vectors.csv)'
+             '(default: <dataset>/marker_poses.csv)'
     )
     args = parser.parse_args()
 
@@ -140,40 +137,15 @@ def main() -> int:
     frame_nums = dataset.get_frame_nums()
     cam_configs = CamConfig.read_cam_configs(folder_path)
 
-    # Load precomputed solution
-    mcm = MultiCamMapper()
-    if not mcm.read_solution_file(solution_path):
+    # Load precomputed solution (to get camera calibration)
+    mcm_template = MultiCamMapper()
+    if not mcm_template.read_solution_file(solution_path):
         print(f'Cannot read solution: {solution_path}', file=sys.stderr)
         return 1
 
-    # Configure: only optimise object pose during tracking
-    mcm.set_optmize_flag_cam_poses(False)
-    mcm.set_optmize_flag_marker_poses(False)
-    mcm.set_optmize_flag_object_poses(True)
-    mcm.set_optmize_flag_cam_intrinsics(False)
-
-    ma = mcm.get_mat_arrays()
-    transforms_to_root_cam = ma['transforms_to_root_cam']
-    transforms_to_root_marker = ma['transforms_to_root_marker']
-    reference_marker_id = (
-        args.reference_marker_id
-        if args.reference_marker_id is not None
-        else mcm.get_root_marker()
-    )
-    if reference_marker_id not in transforms_to_root_marker:
-        print(
-            f'Reference marker id {reference_marker_id} not found in solution.',
-            file=sys.stderr
-        )
-        return 1
-
-    # Marker-to-reference vectors are static in the solved rigid marker model.
-    T_root_from_ref = transforms_to_root_marker[reference_marker_id]
-    T_ref_from_root = np.linalg.inv(T_root_from_ref)
-    marker_relative_vectors = {}
-    for marker_id, T_root_from_marker in transforms_to_root_marker.items():
-        T_ref_from_marker = T_ref_from_root @ T_root_from_marker
-        marker_relative_vectors[marker_id] = T_ref_from_marker[:3, 3].copy()
+    ma_template = mcm_template.get_mat_arrays()
+    transforms_to_root_cam = ma_template['transforms_to_root_cam']
+    transforms_to_root_marker = ma_template['transforms_to_root_marker']
 
     relative_output = args.relative_output
     relative_output_path = args.relative_output_path
@@ -181,22 +153,22 @@ def main() -> int:
     csv_writer = None
     if relative_output in ('csv', 'both'):
         csv_path = Path(relative_output_path) if relative_output_path else (
-            Path(folder_path) / 'relative_vectors.csv'
+            Path(folder_path) / 'marker_poses.csv'
         )
         csv_file = open(csv_path, 'w', newline='')
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow([
-            'frame_num', 'reference_marker_id', 'marker_id',
-            'dx', 'dy', 'dz', 'abs_distance'
+            'frame_num', 'marker_id',
+            'tx', 'ty', 'tz', 'rx_deg', 'ry_deg', 'rz_deg'
         ])
-        print(f'Writing relative vectors to CSV: {csv_path}')
+        print(f'Writing marker poses to CSV: {csv_path}')
 
-    # Set up live detector (min_detections=2: marker must be seen by ≥2 cameras)
+    # Set up live detector
     iad = ImageArrayDetector(num_cams)
 
-    # Build a tracking Initializer (no detections yet, just holds transforms)
+    # Build tracking initializer
     tracker_init = Initializer(
-        marker_size=mcm.get_marker_size(),
+        marker_size=mcm_template.get_marker_size(),
         cam_configs=cam_configs,
     )
     tracker_init.set_transforms_to_root_cam(transforms_to_root_cam)
@@ -216,53 +188,116 @@ def main() -> int:
         # --- Detection ---
         t_start = time.perf_counter()
         detected = iad.detect_markers(frames, min_detections=1)
-        # Pack into [frame][cam] list expected by Initializer
         frame_detections = [detected]
         detected_marker_ids = sorted(
             {
                 marker_id
                 for cam_markers in detected
                 for marker_id, _ in cam_markers
-                if marker_id in marker_relative_vectors
+                if marker_id in transforms_to_root_marker
             }
         )
 
-        # Count useful detections
         total_det = sum(len(m) for m in detected)
         sum_detect += time.perf_counter() - t_start
         rows = []
-        if total_det > 0:
-            for marker_id in detected_marker_ids:
-                if marker_id == reference_marker_id:
-                    continue
-                vec = marker_relative_vectors[marker_id]
-                abs_distance = float(np.linalg.norm(vec))
-                rows.append((
-                    frame_num,
-                    reference_marker_id,
-                    marker_id,
-                    float(vec[0]),
-                    float(vec[1]),
-                    float(vec[2]),
-                    abs_distance,
-                ))
-                distance_history.setdefault(marker_id, []).append(
-                    (frame_num, abs_distance)
-                )
 
-        t_inf = time.perf_counter()
         if total_det > 0:
             num_wi_frames += 1
             tracker_init.set_detections(frame_detections)
             tracker_init.obtain_pose_estimations()
             tracker_init.init_object_transforms()
 
-            mcm.init_tracking(
-                tracker_init.get_object_transforms(),
-                tracker_init.get_frame_cam_markers(),
-            )
-            # mcm.track()
-            mcm.track_with_fallback(mode='adaptive')
+            # Track each marker independently
+            t_inf = time.perf_counter()
+            marker_poses_this_frame = {}
+
+            # Convert frame_detections to proper dict format: {frame_id: {cam_id: detections}}
+            # detected is [cam_0_detections, cam_1_detections, ...] where each is [(marker_id, corners)]
+            frame_cam_markers_dict = {}
+            for cam_id, cam_markers in enumerate(detected):
+                if cam_markers:
+                    frame_cam_markers_dict[cam_id] = cam_markers
+
+            for marker_id in detected_marker_ids:
+                # Create a single-marker mapper: marker_pose = object_pose
+                # This treats each marker as if it were the sole object
+                mcm_single = MultiCamMapper()
+
+                # Filter detections to only this marker
+                filtered_fcm = {}
+                for cam_id, markers in frame_cam_markers_dict.items():
+                    filtered_markers = [(mid, corners) for mid, corners in markers
+                                        if mid == marker_id]
+                    if filtered_markers:
+                        filtered_fcm[cam_id] = filtered_markers
+
+                if not filtered_fcm:
+                    # No observations for this marker in this frame
+                    continue
+
+                # Use template transforms
+                mcm_single.init(
+                    root_cam=0,
+                    transforms_to_root_cam=transforms_to_root_cam,
+                    root_marker=marker_id,  # This marker is the "root" for this tracker
+                    transforms_to_root_marker={
+                        marker_id: np.eye(4, dtype=np.float64)},
+                    object_poses=tracker_init.get_object_transforms(),
+                    frame_cam_markers={0: filtered_fcm},  # Proper dict format
+                    marker_size=mcm_template.get_marker_size(),
+                    cam_configs=cam_configs,
+                )
+
+                # Optimize only this marker's pose
+                mcm_single.set_optmize_flag_cam_poses(False)
+                mcm_single.set_optmize_flag_marker_poses(False)
+                mcm_single.set_optmize_flag_object_poses(True)
+                mcm_single.set_optmize_flag_cam_intrinsics(False)
+
+                try:
+                    mcm_single.track()
+                    mat_arrays = mcm_single.get_mat_arrays()
+                    # Get the optimized object pose (= marker pose)
+                    frame_keys = sorted(mat_arrays['object_to_global'].keys())
+                    if frame_keys:
+                        T_marker = mat_arrays['object_to_global'][frame_keys[0]]
+                        marker_poses_this_frame[marker_id] = T_marker
+
+                        # Compute distance from origin
+                        t = T_marker[:3, 3]
+                        distance = float(np.linalg.norm(t))
+                        distance_history.setdefault(marker_id, []).append(
+                            (frame_num, distance)
+                        )
+
+                        # Convert rotation matrix to Euler angles (degrees)
+                        R = T_marker[:3, :3]
+                        sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+                        singular = sy < 1e-6
+                        if not singular:
+                            rx = np.arctan2(R[2, 1], R[2, 2])
+                            ry = np.arctan2(-R[2, 0], sy)
+                            rz = np.arctan2(R[1, 0], R[0, 0])
+                        else:
+                            rx = np.arctan2(-R[1, 2], R[1, 1])
+                            ry = np.arctan2(-R[2, 0], sy)
+                            rz = 0
+
+                        rows.append((
+                            frame_num,
+                            marker_id,
+                            float(t[0]),
+                            float(t[1]),
+                            float(t[2]),
+                            float(np.degrees(rx)),
+                            float(np.degrees(ry)),
+                            float(np.degrees(rz)),
+                        ))
+                except Exception as e:
+                    print(f'Warning: failed to track marker {marker_id}: {e}',
+                          file=sys.stderr)
+
             sum_inf += time.perf_counter() - t_inf
 
         sum_total += time.perf_counter() - t_start
@@ -277,32 +312,51 @@ def main() -> int:
                             (100, 100), cv2.FONT_HERSHEY_SIMPLEX,
                             1.5, (0, 0, 255), 3)
             else:
-                mcm.overlay_markers(img, 0, cam)
+                # Draw marker positions from this frame's poses
+                for marker_id, T_marker in marker_poses_this_frame.items():
+                    # Project marker corners using the optimized pose
+                    T_local_cam = np.linalg.inv(transforms_to_root_cam[cam])
+                    T_proj = T_local_cam @ T_marker
+                    rvec, _ = cv2.Rodrigues(T_proj[:3, :3])
+                    tvec = T_proj[:3, 3]
+                    K = cam_configs[cam].cam_mat
+                    D = cam_configs[cam].dist_coeffs
+                    marker_size = mcm_template.get_marker_size()
+                    h = marker_size / 2.0
+                    pts_3d = np.array([
+                        [-h, h, 0], [h, h, 0], [h, -h, 0], [-h, -h, 0]
+                    ], dtype=np.float32)
+                    pts_2d, _ = cv2.projectPoints(pts_3d, rvec, tvec, K, D)
+                    pts = pts_2d.reshape(4, 2).astype(np.int32)
+                    color = _marker_color(marker_id)
+                    for j in range(4):
+                        cv2.line(img, tuple(pts[j]), tuple(pts[(j + 1) % 4]),
+                                 color, 2)
             frames[cam] = img
 
         mosaic = make_mosaic(frames, 1536)
         if mosaic is not None:
-            header = f'Ref marker: {reference_marker_id} | distances (m)'
+            header = f'Independent marker tracking | poses (m,deg)'
             cv2.putText(mosaic, header, (20, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.8, (0, 255, 255), 2)
             if rows:
                 for idx, row in enumerate(rows[:8]):
-                    marker_id = row[2]
-                    abs_distance = row[6]
+                    marker_id = row[1]
+                    tx, ty, tz = row[2], row[3], row[4]
                     color = _marker_color(marker_id)
                     cv2.putText(
                         mosaic,
-                        f'm{marker_id}: {abs_distance:.4f} m',
+                        f'm{marker_id}: t=({tx:.3f},{ty:.3f},{tz:.3f})',
                         (20, 60 + idx * 28),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
+                        0.65,
                         color,
                         2,
                     )
             else:
-                cv2.putText(mosaic, 'No marker distances', (20, 60),
+                cv2.putText(mosaic, 'No marker poses', (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.imshow('Tracking', mosaic)
+            cv2.imshow('Independent Marker Tracking', mosaic)
         _draw_distance_plot(distance_plot, distance_history,
                             frame_min, frame_max)
         cv2.imshow('Distance Plot', distance_plot)
@@ -311,15 +365,12 @@ def main() -> int:
         if total_det > 0 and relative_output != 'none':
             if rows and relative_output in ('stdout', 'both'):
                 for row in rows:
-                    (
-                        out_frame_num, out_reference_marker_id, out_marker_id,
-                        dx, dy, dz, abs_distance
-                    ) = row
+                    (out_frame_num, out_marker_id, tx, ty, tz,
+                     rx_deg, ry_deg, rz_deg) = row
                     print(
-                        f'frame={out_frame_num} ref={out_reference_marker_id} '
-                        f'marker={out_marker_id} '
-                        f'dx={dx:.6f} dy={dy:.6f} dz={dz:.6f} '
-                        f'abs_distance={abs_distance:.6f}'
+                        f'frame={out_frame_num} marker={out_marker_id} '
+                        f'tx={tx:.6f} ty={ty:.6f} tz={tz:.6f} '
+                        f'rx={rx_deg:.2f}° ry={ry_deg:.2f}° rz={rz_deg:.2f}°'
                     )
             if rows and csv_writer is not None:
                 csv_writer.writerows(rows)
