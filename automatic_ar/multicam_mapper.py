@@ -571,8 +571,8 @@ class MultiCamMapper:
                 result = least_squares(
                     residuals, x0,
                     method='lm',
-                    ftol=1e-6, xtol=1e-8,
-                    max_nfev=200,
+                    ftol=1e-8, xtol=1e-9,
+                    max_nfev=400,
                     verbose=0,
                 )
                 ma_optimized = self._vec_to_mats(result.x, cfg)
@@ -621,8 +621,8 @@ class MultiCamMapper:
                     result = least_squares(
                         residuals, x_marker,
                         method='lm',
-                        ftol=1e-6, xtol=1e-8,
-                        max_nfev=200,
+                        ftol=1e-8, xtol=1e-10,
+                        max_nfev=400,
                         verbose=0,
                     )
                     self.mat_arrays = self._vec_to_mats(result.x, cfg_marker)

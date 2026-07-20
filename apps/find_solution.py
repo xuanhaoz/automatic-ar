@@ -45,23 +45,25 @@ def main() -> int:
         description='Initialise and optimise a multi-camera AR solution.'
     )
     parser.add_argument('folder',      help='Path to dataset folder')
-    parser.add_argument('marker_size', type=float, help='Physical marker size in metres')
+    parser.add_argument('marker_size', type=float,
+                        help='Physical marker size in metres')
     parser.add_argument('-subseqs',    action='store_true',
                         help='Restrict to subsequences defined in subseqs.txt')
     parser.add_argument('-exclude-cams', dest='exclude_cams', nargs='*', type=int,
                         default=[], metavar='CAM')
     parser.add_argument('-with-huber', dest='with_huber', action='store_true')
     parser.add_argument('-thresh',     dest='thresh', type=float, default=None)
-    parser.add_argument('-tracking-only', dest='tracking_only', action='store_true')
+    parser.add_argument(
+        '-tracking-only', dest='tracking_only', action='store_true')
     args = parser.parse_args()
 
-    folder_path   = args.folder
-    marker_size   = args.marker_size
+    folder_path = args.folder
+    marker_size = args.marker_size
     excluded_cams = set(args.exclude_cams or [])
-    use_subseqs   = args.subseqs
-    with_huber    = args.with_huber
+    use_subseqs = args.subseqs
+    with_huber = args.with_huber
     set_threshold = args.thresh is not None
-    threshold     = args.thresh if set_threshold else 2.0
+    threshold = args.thresh if set_threshold else 2.0
     tracking_only = args.tracking_only
 
     solution_suffix = build_solution_name(
@@ -69,14 +71,15 @@ def main() -> int:
         tracking_only, threshold, set_threshold
     )
     initial_path = folder_path + '/initial' + solution_suffix
-    final_path   = folder_path + '/final'   + solution_suffix
+    final_path = folder_path + '/final' + solution_suffix
 
     detections_path = folder_path + '/aruco.detections'
-    cam_configs     = CamConfig.read_cam_configs(folder_path)
+    cam_configs = CamConfig.read_cam_configs(folder_path)
 
     subseqs = None
     if use_subseqs:
         subseqs = MultiCamMapper.read_subseqs(folder_path + '/subseqs.txt')
+        print(f'Using subsequences: {subseqs[0]} ... {subseqs[-1]}')
 
     print('Reading detections …')
     detections = Initializer.read_detections_file(detections_path, subseqs)
@@ -92,7 +95,7 @@ def main() -> int:
     )
 
     mcm = MultiCamMapper.from_initializer(initializer)
-    mcm.set_optmize_flag_cam_intrinsics(False)
+    mcm.set_optmize_flag_cam_intrinsics(True)
     if with_huber:
         mcm.set_with_huber(True)
     if tracking_only:

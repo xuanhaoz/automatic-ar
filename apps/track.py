@@ -148,8 +148,8 @@ def main() -> int:
 
     # Configure: only optimise object pose during tracking
     mcm.set_optmize_flag_cam_poses(False)
-    mcm.set_optmize_flag_marker_poses(False)
-    mcm.set_optmize_flag_object_poses(True)
+    mcm.set_optmize_flag_marker_poses(True)
+    mcm.set_optmize_flag_object_poses(False)
     mcm.set_optmize_flag_cam_intrinsics(False)
 
     ma = mcm.get_mat_arrays()
