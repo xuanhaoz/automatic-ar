@@ -503,10 +503,10 @@ class MultiCamMapper:
     def track(self) -> None:
         """Optimise only the current-frame object pose (6 DOF)."""
         cfg = OptimConfig(
-            optimize_cam_poses=True,
+            optimize_cam_poses=False,
             optimize_marker_poses=False,
-            optimize_object_poses=False,
-            optimize_cam_intrinsics=True,
+            optimize_object_poses=True,
+            optimize_cam_intrinsics=False,
         )
         x0 = self._mats_to_vec(self.mat_arrays, cfg)
         if x0.size == 0:
@@ -543,7 +543,7 @@ class MultiCamMapper:
             cfg = OptimConfig(
                 optimize_cam_poses=False,
                 optimize_marker_poses=True,
-                optimize_object_poses=False,
+                optimize_object_poses=True,
                 optimize_cam_intrinsics=False,
             )
 
@@ -602,30 +602,30 @@ class MultiCamMapper:
         elif mode == 'independent':
             self.track_independent_markers()
         elif mode == 'adaptive':
-            # Check if system is well-determined for joint marker optimization
-            cfg_marker = OptimConfig(
+            # Check if system is well-determined for object-pose optimization
+            cfg_object = OptimConfig(
                 optimize_cam_poses=False,
-                optimize_marker_poses=True,
-                optimize_object_poses=False,
+                optimize_marker_poses=False,
+                optimize_object_poses=True,
                 optimize_cam_intrinsics=False,
             )
-            x_marker = self._mats_to_vec(self.mat_arrays, cfg_marker)
+            x_object = self._mats_to_vec(self.mat_arrays, cfg_object)
 
-            if x_marker.size > 0 and self.num_point_xys >= x_marker.size:
-                # Well-determined: try marker optimization
+            if x_object.size > 0 and self.num_point_xys >= x_object.size:
+                # Well-determined: try rigid object optimization
                 try:
                     def residuals(x: np.ndarray) -> np.ndarray:
-                        ma = self._vec_to_mats(x, cfg_marker)
+                        ma = self._vec_to_mats(x, cfg_object)
                         return self._eval_residuals(ma)
 
                     result = least_squares(
-                        residuals, x_marker,
+                        residuals, x_object,
                         method='lm',
                         ftol=1e-8, xtol=1e-10,
                         max_nfev=400,
                         verbose=0,
                     )
-                    self.mat_arrays = self._vec_to_mats(result.x, cfg_marker)
+                    self.mat_arrays = self._vec_to_mats(result.x, cfg_object)
                 except ValueError:
                     # Fallback to independent if fails
                     self.track_independent_markers()

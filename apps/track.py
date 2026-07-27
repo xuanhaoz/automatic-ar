@@ -118,7 +118,7 @@ def main() -> int:
         'solution', help='Path to .solution file (from find_solution)')
     parser.add_argument(
         '--reference-marker-id', type=int, default=None,
-        help='Reference marker id for relative marker vectors (default: root marker)'
+        help='Reference marker id for relative marker vectors (default: marker 0)'
     )
     parser.add_argument(
         '--relative-output', choices=['stdout', 'csv', 'both', 'none'],
@@ -148,8 +148,8 @@ def main() -> int:
 
     # Configure: only optimise object pose during tracking
     mcm.set_optmize_flag_cam_poses(False)
-    mcm.set_optmize_flag_marker_poses(True)
-    mcm.set_optmize_flag_object_poses(False)
+    mcm.set_optmize_flag_marker_poses(False)
+    mcm.set_optmize_flag_object_poses(True)
     mcm.set_optmize_flag_cam_intrinsics(False)
 
     ma = mcm.get_mat_arrays()
@@ -158,7 +158,7 @@ def main() -> int:
     reference_marker_id = (
         args.reference_marker_id
         if args.reference_marker_id is not None
-        else mcm.get_root_marker()
+        else 0
     )
     if reference_marker_id not in transforms_to_root_marker:
         print(
@@ -262,7 +262,7 @@ def main() -> int:
                 tracker_init.get_frame_cam_markers(),
             )
             # mcm.track()
-            mcm.track_with_fallback(mode='adaptive')
+            mcm.track_with_fallback(mode='independent')
             sum_inf += time.perf_counter() - t_inf
 
         sum_total += time.perf_counter() - t_start
@@ -303,24 +303,24 @@ def main() -> int:
                 cv2.putText(mosaic, 'No marker distances', (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.imshow('Tracking', mosaic)
-        _draw_distance_plot(distance_plot, distance_history,
-                            frame_min, frame_max)
-        cv2.imshow('Distance Plot', distance_plot)
+        # _draw_distance_plot(distance_plot, distance_history,
+        #                     frame_min, frame_max)
+        # cv2.imshow('Distance Plot', distance_plot)
         cv2.waitKey(1)
 
         if total_det > 0 and relative_output != 'none':
-            if rows and relative_output in ('stdout', 'both'):
-                for row in rows:
-                    (
-                        out_frame_num, out_reference_marker_id, out_marker_id,
-                        dx, dy, dz, abs_distance
-                    ) = row
-                    print(
-                        f'frame={out_frame_num} ref={out_reference_marker_id} '
-                        f'marker={out_marker_id} '
-                        f'dx={dx:.6f} dy={dy:.6f} dz={dz:.6f} '
-                        f'abs_distance={abs_distance:.6f}'
-                    )
+            # if rows and relative_output in ('stdout', 'both'):
+            #     for row in rows:
+            #         (
+            #             out_frame_num, out_reference_marker_id, out_marker_id,
+            #             dx, dy, dz, abs_distance
+            #         ) = row
+            #         print(
+            #             f'frame={out_frame_num} ref={out_reference_marker_id} '
+            #             f'marker={out_marker_id} '
+            #             f'dx={dx:.6f} dy={dy:.6f} dz={dz:.6f} '
+            #             f'abs_distance={abs_distance:.6f}'
+            #         )
             if rows and csv_writer is not None:
                 csv_writer.writerows(rows)
 

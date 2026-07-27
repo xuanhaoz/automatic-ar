@@ -5,6 +5,7 @@ Reads calibration files written by OpenCV (FileStorage XML/YAML) with keys:
 """
 
 import cv2
+import math
 import numpy as np
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -63,6 +64,30 @@ class CamConfig:
 
         return cls(K, D, (w, h))
 
+    def to_file(self, path: str) -> bool:
+        """Save camera calibration to OpenCV FileStorage YAML file.
+        
+        Args:
+            path: Output file path (should end with .xml, .yml, or .yaml)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            fs = cv2.FileStorage(str(path), cv2.FileStorage_WRITE)
+            if not fs.isOpened():
+                return False
+            
+            fs.write('image_width', int(self.image_size[0]))
+            fs.write('image_height', int(self.image_size[1]))
+            fs.write('camera_matrix', self.cam_mat)
+            fs.write('distortion_coefficients', self.dist_coeffs)
+            fs.release()
+            return True
+        except Exception as e:
+            print(f'Error saving calibration to {path}: {e}')
+            return False
+
     @classmethod
     def read_cam_configs(cls, folder_path: str) -> List['CamConfig']:
         """Scan *folder_path* for numbered sub-directories and load calib files.
@@ -88,4 +113,83 @@ class CamConfig:
                     break
             if config is not None:
                 configs.append(config)
+        return configs
+
+    @classmethod
+    def create_default_config(cls,
+                             image_size: Tuple[int, int],
+                             fov_degrees: float = 60.0) -> 'CamConfig':
+        """Create a default camera config with estimated parameters.
+        
+        Args:
+            image_size:    (width, height) in pixels
+            fov_degrees:   Field of view in degrees (default 60°)
+        
+        Returns:
+            CamConfig with estimated focal length and zero distortion
+        """
+        # Convert FOV to focal length
+        # FOV = 2 * arctan(width / (2 * f))
+        # f = width / (2 * tan(FOV/2))
+        fov_rad = math.radians(fov_degrees)
+        focal_length = image_size[0] / (2.0 * math.tan(fov_rad / 2.0))
+        
+        K = np.array([
+            [focal_length, 0.0, image_size[0] / 2.0],
+            [0.0, focal_length, image_size[1] / 2.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float64)
+        
+        D = np.zeros(5, dtype=np.float64)
+        
+        return cls(K, D, image_size)
+
+    @classmethod
+    def create_default_configs(cls,
+                              folder_path: str,
+                              num_cameras: int,
+                              fov_degrees: float = 60.0) -> List['CamConfig']:
+        """Create default camera configs for all cameras in a folder.
+        
+        Infers image size from first detected frame or uses defaults.
+        
+        Args:
+            folder_path:   Path to dataset folder
+            num_cameras:   Number of cameras expected
+            fov_degrees:   Field of view in degrees
+        
+        Returns:
+            List of default CamConfig objects
+        """
+        # Try to infer image size from first image
+        image_size = (1280, 720)  # Default fallback
+        
+        from pathlib import Path
+        folder = Path(folder_path)
+        
+        # Try to find first image in any camera folder
+        for cam_idx in range(num_cameras):
+            cam_dir = folder / str(cam_idx)
+            if cam_dir.exists():
+                # Look for any image file (jpg or png)
+                img_files = list(cam_dir.glob('*.jpg')) + list(cam_dir.glob('*.png'))
+                for img_file in img_files:
+                    try:
+                        import cv2
+                        img = cv2.imread(str(img_file))
+                        if img is not None:
+                            h, w = img.shape[:2]
+                            image_size = (w, h)
+                            break
+                    except Exception:
+                        pass
+            if image_size != (1280, 720):
+                break
+        
+        # Create default config for each camera
+        configs = []
+        for _ in range(num_cameras):
+            config = cls.create_default_config(image_size, fov_degrees)
+            configs.append(config)
+        
         return configs

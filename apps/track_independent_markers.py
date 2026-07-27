@@ -115,6 +115,7 @@ def _draw_distance_plot(
     distance_history: Dict[int, List[Tuple[int, float]]],
     frame_min: int,
     frame_max: int,
+    reference_marker_id: Optional[int] = None,
 ) -> None:
     h, w = plot_img.shape[:2]
     plot_img[:] = 255
@@ -122,7 +123,10 @@ def _draw_distance_plot(
     x0, x1 = pad_l, w - pad_r
     y0, y1 = h - pad_b, pad_t
     cv2.rectangle(plot_img, (x0, y1), (x1, y0), (235, 235, 235), 1)
-    cv2.putText(plot_img, 'abs distance vs frame', (10, 18),
+    title = 'marker distance to reference vs frame'
+    if reference_marker_id is not None:
+        title += f' (ref=m{reference_marker_id})'
+    cv2.putText(plot_img, title, (10, 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
 
     frame_span = max(1, frame_max - frame_min)
@@ -152,13 +156,55 @@ def _draw_distance_plot(
         if len(points) < 1:
             continue
         color = _marker_color(marker_id)
-        if len(points) >= 2:
-            poly = np.array([to_xy(fn, d) for fn, d in points], dtype=np.int32)
+        sorted_points = sorted(points, key=lambda p: p[0])
+
+        # Break the line whenever frames are not consecutive so gaps do not get
+        # interpolated as if the marker had a continuous pose estimate.
+        segment: List[Tuple[int, float]] = []
+        last_frame: Optional[int] = None
+        for fn, dist in sorted_points:
+            if last_frame is None or fn == last_frame + 1:
+                segment.append((fn, dist))
+            else:
+                if len(segment) >= 2:
+                    poly = np.array([to_xy(f, d) for f, d in segment],
+                                    dtype=np.int32)
+                    cv2.polylines(plot_img, [poly], False, color, 2)
+                segment = [(fn, dist)]
+            last_frame = fn
+
+        if len(segment) >= 2:
+            poly = np.array([to_xy(f, d) for f, d in segment], dtype=np.int32)
             cv2.polylines(plot_img, [poly], False, color, 2)
-        x_last, y_last = to_xy(points[-1][0], points[-1][1])
+        x_last, y_last = to_xy(sorted_points[-1][0], sorted_points[-1][1])
         cv2.circle(plot_img, (x_last, y_last), 3, color, -1)
         cv2.putText(plot_img, f'm{marker_id}', (x_last + 4, y_last - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+
+def _write_distance_history(
+    distance_history: Dict[int, List[Tuple[int, float]]],
+    folder_path: str,
+    reference_marker_id: Optional[int],
+) -> Optional[Path]:
+    """Persist per-marker distance history to CSV at the end of tracking."""
+    if not distance_history:
+        return None
+
+    csv_path = Path(folder_path) / 'marker_distance_history.csv'
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['frame_num', 'reference_marker_id', 'marker_id', 'distance_m'])
+        for marker_id in sorted(distance_history.keys()):
+            for frame_num, distance in sorted(distance_history[marker_id], key=lambda p: p[0]):
+                writer.writerow([
+                    frame_num,
+                    reference_marker_id if reference_marker_id is not None else '',
+                    marker_id,
+                    distance,
+                ])
+
+    return csv_path
 
 
 def main() -> int:
@@ -170,7 +216,7 @@ def main() -> int:
         'solution', help='Path to .solution file (from find_solution)')
     parser.add_argument(
         '--reference-marker-id', type=int, default=None,
-        help='Reference marker id for relative distances (default: first tracked marker)'
+        help='Reference marker id for relative distances (default: marker 0)'
     )
     parser.add_argument(
         '--relative-output', choices=['stdout', 'csv', 'both', 'none'],
@@ -241,6 +287,8 @@ def main() -> int:
     frame_max = max(frame_nums) if frame_nums else 1
     distance_history: Dict[int, List[Tuple[int, float]]] = {}
     distance_plot = np.full((420, 800, 3), 255, dtype=np.uint8)
+    resolved_reference_marker_id = 0 if reference_marker_id is None else reference_marker_id
+    warned_missing_reference = False
 
     for frame_num in frame_nums:
         frames = dataset.get_frame(frame_num)
@@ -250,12 +298,13 @@ def main() -> int:
         t_start = time.perf_counter()
         detected = iad.detect_markers(frames, min_detections=1)
         frame_detections = [detected]
+        # Track every detected marker individually; do not require it to exist
+        # in the original solution template.
         detected_marker_ids = sorted(
             {
                 marker_id
                 for cam_markers in detected
                 for marker_id, _ in cam_markers
-                if marker_id in transforms_to_root_marker
             }
         )
 
@@ -332,9 +381,9 @@ def main() -> int:
                           file=sys.stderr)
                     continue
 
-                # Check if we have enough observations to solve for 6 DOF
-                # Each 2D point gives 2 residuals, so need at least 3 observations (6 residuals)
-                num_residuals = mcm_single.num_point_xys
+                # Check if we have enough residuals to solve for 6 DOF.
+                # Count all residuals contributed by every camera view together.
+                num_residuals = estimated_residuals
                 if num_residuals < 6:
                     num_cameras = len(filtered_fcm)
                     print(f'Warning: marker {marker_id} frame {frame_num}: '
@@ -358,7 +407,8 @@ def main() -> int:
                     detected_marker_ids.add(marker_id)
                     continue
 
-                # Optimize only this marker's pose
+                # Optimize only this marker's object pose (the marker itself is
+                # the root object in this single-marker mapper).
                 mcm_single.set_optmize_flag_cam_poses(False)
                 mcm_single.set_optmize_flag_marker_poses(False)
                 mcm_single.set_optmize_flag_object_poses(True)
@@ -373,12 +423,10 @@ def main() -> int:
                         T_marker = mat_arrays['object_to_global'][frame_keys[0]]
                         marker_poses_this_frame[marker_id] = T_marker
 
-                        # Compute distance from origin
-                        t = T_marker[:3, 3]
-                        distance = float(np.linalg.norm(t))
-                        distance_history.setdefault(marker_id, []).append(
-                            (frame_num, distance)
-                        )
+                        if marker_id == resolved_reference_marker_id:
+                            # Reference marker is only used as the anchor frame;
+                            # do not include it in the absolute-distance output.
+                            continue
 
                         # Convert rotation matrix to Euler angles (degrees)
                         R = T_marker[:3, :3]
@@ -416,17 +464,16 @@ def main() -> int:
 
             # Compute relative distances between markers in this frame
             if marker_poses_this_frame:
-                # Choose reference marker: first tracked marker if not specified
-                ref_marker_id = reference_marker_id
-                if ref_marker_id is None or ref_marker_id not in marker_poses_this_frame:
-                    ref_marker_id = min(marker_poses_this_frame.keys())
+                if resolved_reference_marker_id is None:
+                    resolved_reference_marker_id = min(marker_poses_this_frame.keys())
 
+                ref_marker_id = resolved_reference_marker_id
                 if ref_marker_id in marker_poses_this_frame:
                     T_ref = marker_poses_this_frame[ref_marker_id]
                     ref_pos = T_ref[:3, 3]
 
-                    for marker_id in detected_marker_ids:
-                        if marker_id not in marker_poses_this_frame:
+                    for marker_id in sorted(marker_poses_this_frame.keys()):
+                        if marker_id == ref_marker_id:
                             continue
 
                         T_marker = marker_poses_this_frame[marker_id]
@@ -436,9 +483,7 @@ def main() -> int:
 
                         # Find and update the row for this marker
                         for i, row in enumerate(rows):
-                            # row[2] is marker_id (after ref_marker_id)
                             if row[2] == marker_id:
-                                # Update reference marker and relative distances
                                 rows[i] = row[:1] + (ref_marker_id,) + row[2:9] + (
                                     float(rel_vec[0]),
                                     float(rel_vec[1]),
@@ -447,11 +492,27 @@ def main() -> int:
                                 )
                                 break
 
-                        # Update distance history with relative distance
+                        # Skip the reference marker itself; its relative distance
+                        # to itself is always zero and would pollute the plot.
                         if marker_id != ref_marker_id:
                             distance_history.setdefault(marker_id, []).append(
                                 (frame_num, rel_distance)
                             )
+                else:
+                    if not warned_missing_reference:
+                        print(
+                            f'Warning: reference marker {ref_marker_id} not visible in '
+                            f'frame {frame_num}; relative distances unavailable for this frame',
+                            file=sys.stderr,
+                        )
+                        warned_missing_reference = True
+                    for i, row in enumerate(rows):
+                        rows[i] = row[:9] + (
+                            float('nan'),
+                            float('nan'),
+                            float('nan'),
+                            float('nan'),
+                        )
 
         sum_total += time.perf_counter() - t_start
 
@@ -467,24 +528,36 @@ def main() -> int:
             else:
                 # Draw marker positions from this frame's poses
                 for marker_id, T_marker in marker_poses_this_frame.items():
-                    # Project marker corners using the optimized pose
+                    # Project marker corners using the optimized 3D pose.
                     T_local_cam = np.linalg.inv(transforms_to_root_cam[cam])
                     T_proj = T_local_cam @ T_marker
-                    rvec, _ = cv2.Rodrigues(T_proj[:3, :3])
-                    tvec = T_proj[:3, 3]
-                    K = cam_configs[cam].cam_mat
-                    D = cam_configs[cam].dist_coeffs
                     marker_size = mcm_template.get_marker_size()
                     h = marker_size / 2.0
                     pts_3d = np.array([
                         [-h, h, 0], [h, h, 0], [h, -h, 0], [-h, -h, 0]
                     ], dtype=np.float32)
-                    pts_2d, _ = cv2.projectPoints(pts_3d, rvec, tvec, K, D)
-                    pts = pts_2d.reshape(4, 2).astype(np.int32)
-                    color = _marker_color(marker_id)
-                    for j in range(4):
-                        cv2.line(img, tuple(pts[j]), tuple(pts[(j + 1) % 4]),
-                                 color, 2)
+                    pts_cam = (T_proj[:3, :3] @ pts_3d.T + T_proj[:3, 3:4]).T
+                    if np.all(pts_cam[:, 2] > 1e-6):
+                        rvec, _ = cv2.Rodrigues(T_proj[:3, :3])
+                        tvec = T_proj[:3, 3]
+                        K = cam_configs[cam].cam_mat
+                        D = cam_configs[cam].dist_coeffs
+                        pts_2d, _ = cv2.projectPoints(pts_3d, rvec, tvec, K, D)
+                        pts = pts_2d.reshape(4, 2).astype(np.int32)
+                        color = _marker_color(marker_id)
+                        for j in range(4):
+                            cv2.line(img, tuple(pts[j]), tuple(pts[(j + 1) % 4]),
+                                     color, 2)
+                    else:
+                        cv2.putText(
+                            img,
+                            f'm{marker_id} behind camera',
+                            (80, 80 + 24 * marker_id),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 0, 255),
+                            1,
+                        )
             frames[cam] = img
 
         mosaic = make_mosaic(frames, 1536)
@@ -498,9 +571,12 @@ def main() -> int:
                     marker_id = row[2]
                     rel_distance = row[12]  # Last element is rel_distance
                     color = _marker_color(marker_id)
+                    rel_distance_text = (
+                        'n/a' if math.isnan(rel_distance) else f'{rel_distance:.4f}m'
+                    )
                     cv2.putText(
                         mosaic,
-                        f'm{marker_id}: d={rel_distance:.4f}m (ref=m{ref_marker_id})',
+                        f'm{marker_id}: 3d d={rel_distance_text} (ref=m{ref_marker_id})',
                         (20, 60 + idx * 28),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.65,
@@ -508,11 +584,12 @@ def main() -> int:
                         2,
                     )
             else:
-                cv2.putText(mosaic, 'No marker poses', (20, 60),
+                cv2.putText(mosaic, 'No optimized 3D marker poses', (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.imshow('Independent Marker Tracking', mosaic)
         _draw_distance_plot(distance_plot, distance_history,
-                            frame_min, frame_max)
+                               frame_min, frame_max,
+                               resolved_reference_marker_id)
         cv2.imshow('Distance Plot', distance_plot)
         cv2.waitKey(1)
 
@@ -521,17 +598,25 @@ def main() -> int:
                 for row in rows:
                     (out_frame_num, out_ref_marker_id, out_marker_id, tx, ty, tz,
                      rx_deg, ry_deg, rz_deg, rel_dx, rel_dy, rel_dz, rel_distance) = row
+                    rel_distance_str = (
+                        'n/a' if math.isnan(rel_distance) else f'{rel_distance:.6f}'
+                    )
                     print(
                         f'frame={out_frame_num} ref={out_ref_marker_id} marker={out_marker_id} '
                         f'tx={tx:.6f} ty={ty:.6f} tz={tz:.6f} '
                         f'rx={rx_deg:.2f}° ry={ry_deg:.2f}° rz={rz_deg:.2f}° '
                         f'rel_dx={rel_dx:.6f} rel_dy={rel_dy:.6f} rel_dz={rel_dz:.6f} '
-                        f'rel_distance={rel_distance:.6f}'
+                        f'rel_distance={rel_distance_str}'
                     )
             if rows and csv_writer is not None:
                 csv_writer.writerows(rows)
 
     cv2.destroyAllWindows()
+    history_path = _write_distance_history(
+        distance_history, folder_path, resolved_reference_marker_id
+    )
+    if history_path is not None:
+        print(f'Wrote distance history to: {history_path}')
     if csv_file is not None:
         csv_file.close()
 
